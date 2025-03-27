@@ -2,10 +2,10 @@ import cv2
 import os
 import re
 import shutil
+from tqdm import tqdm
 import pytesseract
 from pdf2image import convert_from_path
 from skimage.metrics import structural_similarity as ssim
-
 
 # Path to the PDF
 pdf_path = r"C:\Users\Sico\Documents\projet\blankFinder\sources\silcaBlanks.pdf"
@@ -13,27 +13,8 @@ pdf_path = r"C:\Users\Sico\Documents\projet\blankFinder\sources\silcaBlanks.pdf"
 # Create and clean the "keyway" directory
 keyway_dir = "keyway"
 if os.path.exists(keyway_dir):
-    # Clean the folder by removing all files
     shutil.rmtree(keyway_dir)
-    os.makedirs(keyway_dir)  # Recreate the folder
-else:
-    os.makedirs(keyway_dir)  # Create the folder if it doesn't exist
-
-# Convert specific page (you can adjust first_page and last_page if necessary)
-pages = convert_from_path(pdf_path, dpi=300)  # , first_page=19, last_page=30)  # First page as test
-
-
-def is_similar(image1, image2, threshold=0.8):
-    """Compare two images using Structural Similarity Index (SSIM) and return True if they are similar."""
-    if image1.shape != image2.shape:
-        return False  # Avoid comparing images of different sizes
-
-    gray1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-
-    score, _ = ssim(gray1, gray2, full=True)
-    return score > threshold
-
+os.makedirs(keyway_dir)
 
 # Load excluded shapes
 exclude_dir = r"C:\Users\Sico\Documents\projet\blankFinder\sources\shapes_to_exclude"
@@ -45,102 +26,88 @@ for filename in os.listdir(exclude_dir):
     if img is not None:
         excluded_shapes.append(img)
 
-# Loop through pages (for testing purposes, let's handle one page first)
-for page_num, page in enumerate(pages, start=1):
-    # Save page as image
-    first_page_path = f"page_{page_num}.jpg"
-    page.save(first_page_path, "JPEG")
+# Define batch processing
+batch_size = 10  # Process 10 pages at a time
+total_pages = 328  # Adjust according to your PDF
 
-    # Load image
-    img = cv2.imread(first_page_path)
+similarity_threshold = 0.70
 
-    # Get image dimensions
-    height, width, _ = img.shape
 
-    # Calculate the crop region (16% from top and bottom)
-    top_crop = int(height * 0.16)
-    bottom_crop = int(height * 0.95)
+def is_similar(image1, image2, threshold=similarity_threshold):
+    """Compare deux images avec SSIM et retourne True si elles sont suffisamment similaires."""
+    if image1.shape != image2.shape:
+        return False
+    gray1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+    gray2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+    score, _ = ssim(gray1, gray2, full=True)
+    return score >= threshold
 
-    # Crop the image horizontally (top and bottom)
-    img = img[top_crop:bottom_crop, :]
 
-    # For odd pages (1, 3, 5, etc.), crop 30% from left and keep the right
-    if page_num % 2 != 0:  # Odd pages
-        crop_x_start = int(width * 0.30)  # 30% from the left, keep right
-        img_cropped = img[:, crop_x_start:]  # Keep right part
-    else:  # Even pages
-        crop_x_end = int(width * 0.70)  # 30% from the right, keep left
-        img_cropped = img[:, :crop_x_end]  # Keep left part
+# Process the PDF in batches
+for start_page in tqdm(range(1, total_pages + 1, batch_size),desc="Total "):
+    end_page = min(start_page + batch_size - 1, total_pages)
+    print(f"\n[INFO] Processing pages {start_page} to {end_page}...")
 
-    # Convert to grayscale
-    gray = cv2.cvtColor(img_cropped, cv2.COLOR_BGR2GRAY)
+    pages = convert_from_path(pdf_path, dpi=300, first_page=start_page, last_page=end_page)
 
-    # Apply binary thresholding to isolate dark shapes (keyways, blanks, etc.)
-    _, binary = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)  # Invert binary image for dark shapes
+    for idx, page in enumerate(tqdm(pages, desc="Extracting Keyways ")):
+        page_num = start_page + idx  # Calculate actual page number
+        page_path = f"page_{page_num}.jpg"
+        page.save(page_path, "JPEG")
 
-    # Find all contours (dark shapes)
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Load image
+        img = cv2.imread(page_path)
+        height, width, _ = img.shape
 
-    # Loop through contours and extract each dark shape
-    for i, contour in enumerate(contours):
-        # Approximate the contour to reduce the number of points
-        epsilon = 0.02 * cv2.arcLength(contour, True)  # You can adjust epsilon for approximation accuracy
-        approx = cv2.approxPolyDP(contour, epsilon, True)
+        # Crop image (removing top/bottom margins)
+        img = img[int(height * 0.16):int(height * 0.95), :]
 
-        # Filter out contours with long straight lines (likely key blanks)
-        # We will ignore contours that have more than a few points or are nearly straight
-        if len(approx) > 4:  # If the shape has more than 4 points, it's likely a non-linear shape (keyway)
+        # Handle odd/even page layout cropping
+        if page_num % 2 != 0:  # Odd pages → Keep right part
+            img_cropped = img[:, int(width * 0.30):]
+        else:  # Even pages → Keep left part
+            img_cropped = img[:, :int(width * 0.70)]
 
-            # Get the bounding box of the contour
-            x, y, w, h = cv2.boundingRect(contour)
+        # Convert to grayscale and apply binary threshold
+        gray = cv2.cvtColor(img_cropped, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
 
-            # Filter based on the area of the contour (excluding small contours like text)
-            contour_area = cv2.contourArea(contour)
-            if contour_area > 600:  # Exclude small contours (like text)
-                aspect_ratio = float(w) / h if h != 0 else 0  # Aspect ratio of bounding box
+        # Find all contours (potential keyways)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-                # Exclude elongated shapes (likely text)
-                if aspect_ratio < 6:  # Adjust this threshold as needed
-                    # Remove shapes where height is larger than width (likely noise)
-                    if w > h:  # Keyways are wider than tall
-                        dark_shape_crop = img_cropped[y:y + h, x:x + w]
+        for i, contour in enumerate(contours):
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
 
-                        # OCR to extract text from the area just below the keyway
-                        roi_y_start = y + h
-                        roi_y_end = roi_y_start + 60  # Define a region below the keyway to extract text
-                        roi_x_start = x - 20
-                        roi_x_end = x + w + 20  # Define a region below the keyway to extract text
+            if len(approx) > 4:  # Likely a keyway (not simple noise)
+                x, y, w, h = cv2.boundingRect(contour)
 
-                        # Crop the region where text should be located
-                        text_roi = img_cropped[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
+                if cv2.contourArea(contour) > 600 and w > h and (float(w) / h) < 6:
+                    dark_shape_crop = img_cropped[y:y + h, x:x + w]
 
-                        # Use OCR to extract text from this region
-                        extracted_text = pytesseract.image_to_string(text_roi, config="--psm 6")
+                    # Define text extraction region below keyway
+                    roi_y_start, roi_y_end = y + h, y + h + 60
+                    roi_x_start, roi_x_end = max(x - 20, 0), min(x + w + 20, img_cropped.shape[1])
+                    text_roi = img_cropped[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
 
-                        # Clean up the text (remove unwanted characters, spaces, etc.)
-                        extracted_text = extracted_text.strip().replace("\n", " ")
+                    # OCR for keyway identification
+                    extracted_text = pytesseract.image_to_string(text_roi, config="--psm 6").strip().replace("\n", " ")
+                    extracted_text = re.sub(r"[\\/:*?\"<>|]", "", extracted_text)  # Remove invalid filename chars
 
-                        # If there’s any text, use it as the keyway name
-                        if extracted_text:
-                            extracted_text = re.sub(r"[\\/:*?\"<>|]", "", extracted_text)
-                            dark_shape_filename = os.path.join(keyway_dir, f"{extracted_text}.jpg")
-                        else:
-                            dark_shape_filename = os.path.join(keyway_dir, f"keyway_{page_num}_{i}.jpg")
+                    # Generate filename
+                    dark_shape_filename = (
+                        os.path.join(keyway_dir, f"{extracted_text}.jpg") if extracted_text else
+                        os.path.join(keyway_dir, f"keyway_{page_num}_{i}.jpg")
+                    )
 
-                        # Save the cropped keyway with the extracted name
-                        # Check if the extracted keyway matches any excluded shape
-                        is_excluded = any(is_similar(dark_shape_crop, excl) for excl in excluded_shapes)
+                    # Check if shape matches an excluded template
+                    is_excluded = any(is_similar(dark_shape_crop, excl) for excl in excluded_shapes)
 
-                        if not is_excluded:
-                            cv2.imwrite(dark_shape_filename, dark_shape_crop)
-                            print(f"[INFO] Dark shape {i} saved as {dark_shape_filename}")
-                        else:
-                            print(f"[INFO] Skipped excluded shape {i}.")
+                    if is_excluded:
+                        pass
+                        # print(f"Skipped excluded shape {i}. (Similarity > {similarity_threshold * 100:.0f}%)")
+
                     else:
-                        print(f"[INFO] Ignored contour {i} because it is taller than wide.")
-                else:
-                    print(f"[INFO] Ignored contour {i} due to aspect ratio or size.")
-            else:
-                print(f"[INFO] Ignored contour {i} due to small area.")
+                        cv2.imwrite(dark_shape_filename, dark_shape_crop)
 
-    print(f"[INFO] Processed page {page_num}")
+    print(f"\n[INFO] Finished processing batch: {start_page} to {end_page}")
