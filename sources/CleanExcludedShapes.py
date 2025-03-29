@@ -8,8 +8,6 @@ from skimage.metrics import structural_similarity as ssim
 exclude_dir = r"C:\Users\Sico\Documents\projet\blankFinder\sources\shapes_to_exclude"
 similarity_threshold = 0.9  # Seuil de similarité pour supprimer les doublons
 
-import os
-import re
 
 # Dossier contenant les images
 exclude_dir = r"C:\Users\Sico\Documents\projet\blankFinder\sources\shapes_to_exclude"

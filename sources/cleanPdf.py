@@ -1,7 +1,5 @@
 import fitz  # PyMuPDF
 
-import fitz  # PyMuPDF
-
 
 def supprimer_pages(pdf_entree, pdf_sortie, nb_premieres_pages=30, nb_derrieres_pages=60):
     # Ouvrir le fichier PDF
